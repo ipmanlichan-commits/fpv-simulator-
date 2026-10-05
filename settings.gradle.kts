@@ -1,9 +1,16 @@
-// settings.gradle.kts
 pluginManagement {
     repositories {
         google()
         mavenCentral()
         gradlePluginPortal()
+    }
+    plugins {
+        // Указываем версию Android Gradle Plugin для приложения и библиотек
+        id("com.android.application") version "8.3.0" apply false
+        id("com.android.library") version "8.3.0" apply false
+        
+        // Указываем версию Kotlin (поставьте нужную вам версию)
+        id("org.jetbrains.kotlin.android") version "1.9.22" apply false
     }
 }
 
@@ -15,5 +22,8 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "My Application"
+// Название вашего проекта в корне
+rootProject.name = "fpv-simulator-"
+
+// Подключение модулей (по умолчанию это :app)
 include(":app")
