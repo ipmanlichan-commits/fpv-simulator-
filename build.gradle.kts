@@ -1,10 +1,29 @@
-// Корневой build.gradle.kts
-plugins {
-    id("com.android.application") version "8.7.0" apply false
-    id("com.android.library") version "8.7.0" apply false
-    id("org.jetbrains.kotlin.android") version "1.9.24" apply false
-}
+name: Android Build
 
-tasks.register<Delete>("clean") {
-    delete(rootProject.layout.buildDirectory)
-}
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.7'
+
+      - name: Build Debug APK
+        run: ./gradlew assembleDebug
