@@ -1,0 +1,373 @@
+package com.fpv.simulator
+
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import java.util.Locale
+import kotlin.math.*
+import kotlin.random.Random
+
+// --- МОДЕЛИ ДАННЫХ И ФИЗИКА ---
+
+data class Position3D(val x: Double, val y: Double, val z: Double)
+
+data class SignalResult(
+    val distanceMeters: Double,
+    val targetAzimuthDeg: Double,
+    val targetElevationDeg: Double,
+    val deltaAzimuthDeg: Double,
+    val deltaElevationDeg: Double,
+    val rssiDbm: Double
+)
+
+object RssiCalculator {
+    fun calculateSignal(
+        dronePos: Position3D,
+        stationPos: Position3D,
+        antennaAzimuthDeg: Double,
+        antennaElevationDeg: Double,
+        pTxDbm: Double = 30.0,
+        gMaxDbi: Double = 14.0,
+        beamwidthH: Double = 30.0,
+        beamwidthV: Double = 20.0,
+        freqMhz: Double = 5800.0
+    ): SignalResult {
+        val dx = dronePos.x - stationPos.x
+        val dy = dronePos.y - stationPos.y
+        val dz = dronePos.z - stationPos.z
+
+        val distance = max(sqrt(dx * dx + dy * dy + dz * dz), 1.0)
+        val horizDist = sqrt(dx * dx + dy * dy)
+
+        val targetAzRad = atan2(dx, dy)
+        val targetAzDeg = (Math.toDegrees(targetAzRad) + 360) % 360
+
+        val targetElRad = atan2(dz, horizDist)
+        val targetElDeg = Math.toDegrees(targetElRad)
+
+        val deltaAz = (targetAzDeg - antennaAzimuthDeg + 180) % 360 - 180
+        val deltaEl = targetElDeg - antennaElevationDeg
+
+        val lossAz = 12.0 * (deltaAz / beamwidthH).pow(2)
+        val lossEl = 12.0 * (deltaEl / beamwidthV).pow(2)
+
+        val gEffective = max(gMaxDbi - (lossAz + lossEl), -20.0)
+
+        val distKm = distance / 1000.0
+        val fspl = 20.0 * log10(distKm) + 20.0 * log10(freqMhz) + 32.44
+
+        val rssi = pTxDbm + gEffective - fspl
+
+        return SignalResult(
+            distanceMeters = distance,
+            targetAzimuthDeg = targetAzDeg,
+            targetElevationDeg = targetElDeg,
+            deltaAzimuthDeg = deltaAz,
+            deltaElevationDeg = deltaEl,
+            rssiDbm = rssi
+        )
+    }
+}
+
+data class AntennaState(
+    val azimuthDeg: Float = 116f,
+    val elevationDeg: Float = 29f,
+    val batteryVoltage: Float = 12.4f
+)
+
+class AntennaRotatorController(val maxSpeedDegPerSec: Float = 40f) {
+    var state by mutableStateOf(AntennaState())
+        private set
+
+    fun update(joystickX: Float, joystickY: Float, deltaTimeSeconds: Float) {
+        var newAz = state.azimuthDeg + (joystickX * maxSpeedDegPerSec * deltaTimeSeconds)
+        var newEl = state.elevationDeg + (joystickY * maxSpeedDegPerSec * deltaTimeSeconds)
+
+        newAz = (newAz + 360f) % 360f
+        newEl = newEl.coerceIn(0f, 85f)
+
+        state = state.copy(azimuthDeg = newAz, elevationDeg = newEl)
+    }
+}
+
+// --- ACTIVITY ---
+
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent {
+            MaterialTheme {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = Color(0xFF090D16)
+                ) {
+                    MainSimulatorScreen()
+                }
+            }
+        }
+    }
+}
+
+// --- ИНТЕРФЕЙС И ЭКРАНЫ ---
+
+@Composable
+fun MainSimulatorScreen() {
+    var droneX by remember { mutableDoubleStateOf(3000.0) }
+    var droneY by remember { mutableDoubleStateOf(4000.0) }
+    val droneZ = 300.0
+
+    val stationPos = remember { Position3D(0.0, 0.0, 2.0) }
+    val rotatorController = remember { AntennaRotatorController() }
+
+    var joystickX by remember { mutableFloatStateOf(0f) }
+    var joystickY by remember { mutableFloatStateOf(0f) }
+
+    val currentSignal = remember(droneX, droneY, rotatorController.state) {
+        RssiCalculator.calculateSignal(
+            dronePos = Position3D(droneX, droneY, droneZ),
+            stationPos = stationPos,
+            antennaAzimuthDeg = rotatorController.state.azimuthDeg.toDouble(),
+            antennaElevationDeg = rotatorController.state.elevationDeg.toDouble()
+        )
+    }
+
+    LaunchedEffect(Unit) {
+        var lastTime = System.nanoTime()
+        while (true) {
+            withFrameNanos { now ->
+                val dt = (now - lastTime) / 1_000_000_000f
+                lastTime = now
+
+                if (joystickX != 0f || joystickY != 0f) {
+                    rotatorController.update(joystickX, joystickY, dt)
+                }
+
+                val timeSec = now / 1_000_000_000.0
+                droneX = 4000.0 * cos(timeSec * 0.1)
+                droneY = 4000.0 * sin(timeSec * 0.1)
+            }
+        }
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+        ) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .padding(4.dp)
+                    .border(1.dp, Color(0xFF334155), RoundedCornerShape(8.dp))
+            ) {
+                FpvMonitorScreen(rssiDbm = currentSignal.rssiDbm, altitude = droneZ)
+            }
+
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .padding(4.dp)
+                    .border(1.dp, Color(0xFF334155), RoundedCornerShape(8.dp))
+                    .background(Color(0xFF1E293B)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = String.format(Locale.US, "КАРТА\n\nДистанция: %.2f км\nИст. Азимут: %03d°\nИст. Угол: %02d°",
+                        currentSignal.distanceMeters / 1000.0,
+                        currentSignal.targetAzimuthDeg.toInt(),
+                        currentSignal.targetElevationDeg.toInt()
+                    ),
+                    color = Color.White,
+                    fontSize = 16.sp,
+                    fontFamily = FontFamily.Monospace
+                )
+            }
+        }
+
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(160.dp),
+            color = Color(0xFF111827)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                ComposableLcdScreen(
+                    azimuth = rotatorController.state.azimuthDeg,
+                    elevation = rotatorController.state.elevationDeg,
+                    voltage = rotatorController.state.batteryVoltage,
+                    modifier = Modifier
+                        .width(240.dp)
+                        .fillMaxHeight()
+                )
+
+                VirtualJoystick(
+                    sizeDp = 130.dp,
+                    knobSizeDp = 45.dp,
+                    onMove = { x, y ->
+                        joystickX = x
+                        joystickY = y
+                    }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun FpvMonitorScreen(rssiDbm: Double, altitude: Double) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+    ) {
+        val noiseAlpha = when {
+            rssiDbm > -65 -> 0.0f
+            rssiDbm in -85.0..-65.0 -> ((-65.0 - rssiDbm) / 20.0).toFloat() * 0.5f
+            rssiDbm in -95.0..-85.0 -> 0.5f + ((-85.0 - rssiDbm) / 10.0).toFloat() * 0.4f
+            else -> 0.98f
+        }
+
+        Text(
+            text = "ALT: ${altitude.toInt()}M\nRSSI: ${rssiDbm.toInt()} dBm",
+            color = Color.Green,
+            fontFamily = FontFamily.Monospace,
+            fontSize = 14.sp,
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(8.dp)
+        )
+
+        if (noiseAlpha > 0f) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val w = size.width.toInt()
+                val h = size.height.toInt()
+                for (i in 0..100) {
+                    val rx = Random.nextInt(0, max(w, 1)).toFloat()
+                    val ry = Random.nextInt(0, max(h, 1)).toFloat()
+                    drawRect(
+                        color = Color.White.copy(alpha = noiseAlpha * Random.nextFloat()),
+                        topLeft = Offset(rx, ry),
+                        size = androidx.compose.ui.geometry.Size(Random.nextInt(10, 80).toFloat(), 2f)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun ComposableLcdScreen(azimuth: Float, elevation: Float, voltage: Float, modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .background(Color(0xFF0D1B2A), shape = RoundedCornerShape(4.dp))
+            .border(2.dp, Color(0xFF1E293B), shape = RoundedCornerShape(4.dp))
+            .padding(8.dp)
+    ) {
+        Column(verticalArrangement = Arrangement.SpaceBetween) {
+            Text(
+                text = String.format(Locale.US, "ГОР:%-3d", azimuth.toInt()),
+                color = Color(0xFF38BDF8),
+                fontSize = 18.sp,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.Bold
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = String.format(Locale.US, "ВЕРТ:%-2d", elevation.toInt()),
+                    color = Color(0xFF38BDF8),
+                    fontSize = 18.sp,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = String.format(Locale.US, "%.1fv", voltage),
+                    color = Color(0xFF38BDF8),
+                    fontSize = 18.sp,
+                    fontFamily = FontFamily.Monospace
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun VirtualJoystick(
+    modifier: Modifier = Modifier,
+    sizeDp: Dp = 130.dp,
+    knobSizeDp: Dp = 45.dp,
+    onMove: (x: Float, y: Float) -> Unit
+) {
+    var knobOffset by remember { mutableStateOf(Offset.Zero) }
+    val density = LocalDensity.current
+    val maxRadiusPx = with(density) { (sizeDp - knobSizeDp).toPx() / 2f }
+
+    Box(
+        modifier = modifier
+            .size(sizeDp)
+            .clip(CircleShape)
+            .background(Color(0xFF1E293B))
+            .border(2.dp, Color(0xFF334155), CircleShape)
+            .pointerInput(Unit) {
+                detectDragGestures(
+                    onDragEnd = {
+                        knobOffset = Offset.Zero
+                        onMove(0f, 0f)
+                    },
+                    onDragCancel = {
+                        knobOffset = Offset.Zero
+                        onMove(0f, 0f)
+                    },
+                    onDrag = { change, dragAmount ->
+                        change.consume()
+                        val raw = knobOffset + dragAmount
+                        val dist = raw.getDistance()
+                        knobOffset = if (dist <= maxRadiusPx) raw else raw * (maxRadiusPx / dist)
+                        onMove(knobOffset.x / maxRadiusPx, -knobOffset.y / maxRadiusPx)
+                    }
+                )
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        Box(
+            modifier = Modifier
+                .offset { IntOffset(knobOffset.x.roundToInt(), knobOffset.y.roundToInt()) }
+                .size(knobSizeDp)
+                .clip(CircleShape)
+                .background(Color(0xFF0284C7))
+        )
+    }
+}
