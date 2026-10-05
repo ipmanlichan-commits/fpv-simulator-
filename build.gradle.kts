@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "com.example.myapp" // Замените на ваш package name
+    namespace = "com.gocha.myapp" // Замените на ваш package name
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.example.myapp" // Замените на ваш package name
+        applicationId = "com.gocha.myapp" // Замените на ваш package name
         minSdk = 24
         targetSdk = 34
         versionCode = 1
