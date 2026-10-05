@@ -1,13 +1,7 @@
-// Корневой settings.gradle.kts
+// settings.gradle.kts
 pluginManagement {
     repositories {
-        google {
-            content {
-                includeGroupByRegex("com\\.android.*")
-                includeGroupByRegex("com\\.google.*")
-                includeGroupByRegex("androidx.*")
-            }
-        }
+        google()
         mavenCentral()
         gradlePluginPortal()
     }
@@ -21,5 +15,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "fpv-simulator-"
+rootProject.name = "My Application"
 include(":app")
