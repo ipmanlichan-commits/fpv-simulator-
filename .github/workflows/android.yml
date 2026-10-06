@@ -1,15 +1,17 @@
-name: Android CI Build
+name: Build Android App
 
 on:
   push:
-    branches: [ "main", "master" ]
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout code
+    - name: Checkout repository
       uses: actions/checkout@v4
 
     - name: Set up JDK 17
@@ -19,9 +21,18 @@ jobs:
         distribution: 'temurin'
 
     - name: Setup Gradle
-      uses: gradle/actions/setup-gradle@v3
-      with:
-        gradle-version: '8.6'
+      uses: gradle/actions/setup-gradle@v4
 
-    - name: Build APK
-      run: gradle assembleDebug
+    - name: Make gradlew executable
+      run: chmod +x gradlew || true
+
+    - name: Build Debug APK
+      run: ./gradlew assembleDebug || gradle assembleDebug
+
+    - name: Upload APK Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: app-debug-apk
+        path: |
+          **/build/outputs/apk/debug/*.apk
+        retention-days: 7
